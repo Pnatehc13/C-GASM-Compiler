@@ -21,6 +21,33 @@ TokenType sema_analyze(Node* n)
             return T_INT;
         case NODE_STR:
             return T_STRING;
+        case NODE_ASSIGN:
+        {
+            char* vn = gettokenname(&tokens[n->token_id]);
+            int sym_idx = find_symbol(vn);
+            if (sym_idx == -1) {
+                char err_msg[128];
+                sprintf(err_msg, "Undeclared variable '%s'", vn);
+                sema_error(err_msg, tokens[n->token_id].line);
+            }
+            
+            TokenType var_type = symtab[sym_idx].type;
+            TokenType expr_type = sema_analyze(n->var.value);
+            
+            int types_match = (var_type == expr_type) || 
+                              (var_type == K_INT && expr_type == T_INT) ||
+                              (var_type == T_INT && expr_type == K_INT);
+
+            if (!types_match) {
+                sema_error("Type mismatch in variable assignment", tokens[n->token_id].line);
+            }
+            return expr_type;
+        }
+        case NODE_BLOCK:
+        {
+            sema_analyze(n->func.body);
+            break;
+        }
         case NODE_FUNC:
             current_function = n;
             if(n->func.body)
@@ -33,8 +60,10 @@ TokenType sema_analyze(Node* n)
                 if(n->var.value)
                 {
                     TokenType t = sema_analyze(n->var.value);
-                    if (t != n->var.dt) 
+                    int types_match = (t == n->var.dt) || (n->var.dt == K_INT && t == T_INT);
+                    if (!types_match) 
                     {
+                        
                         sema_error("Type mismatch in variable initialization", tokens[n->token_id].line);
                     }
                 }
@@ -64,10 +93,14 @@ TokenType sema_analyze(Node* n)
             {
                 sema_error("Cannot perform such action on Strings", tokens[n->token_id].line); 
             }
-            if (left_t != right_t) {
+            int types_match = (left_t == right_t) || 
+                              (left_t == K_INT && right_t == T_INT) ||
+                              (left_t == T_INT && right_t == K_INT);
+                              
+            if (!types_match) {
                 sema_error("Type mismatch in binary operation", tokens[n->token_id].line);
             }
-            return left_t;
+            return T_INT;
         }
         case NODE_IF:
         {
@@ -127,7 +160,10 @@ TokenType sema_analyze(Node* n)
             {
                 TokenType expected_t = def_arg->var.dt; // Definition nodes hold types
                 TokenType passed_t = sema_analyze(call_arg);
-                if (expected_t != passed_t) 
+                int match = (expected_t == passed_t) || 
+                            (expected_t == K_INT && passed_t == T_INT) ||
+                            (expected_t == T_INT && passed_t == K_INT);
+                if (!match) 
                 {
                     sema_error("Type mismatch in function argument", tokens[n->token_id].line);
                 }
@@ -148,7 +184,10 @@ TokenType sema_analyze(Node* n)
             TokenType expected_rt = current_function->func.returntype;
             if (n->ret.value) {
                 TokenType actual_rt = sema_analyze(n->ret.value);
-                if (actual_rt != expected_rt) 
+                int types_match = (expected_rt == actual_rt) || 
+                                  (expected_rt == K_INT && actual_rt == T_INT) ||
+                                  (expected_rt == T_INT && actual_rt == K_INT);
+                if (!types_match) 
                 {
                     char err_msg[256];
                     sprintf(err_msg, "Function '%s' expects return type %d but got %d", current_function->func.name, expected_rt, actual_rt);
@@ -170,7 +209,7 @@ TokenType sema_analyze(Node* n)
             if (n->next) sema_analyze(n->next);
             break;
     }
-    if (n->next && n->type != NODE_FUNC && n->type != NODE_VAR) {
+    if (n->next) {
         sema_analyze(n->next);
     }
     return T_VOID;

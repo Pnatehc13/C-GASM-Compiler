@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include "parser.h"
 #include "sema.h"
+#include "codegen.h"
+
 int main(int argc, char* argv[])
 {
   if (argc < 2) {
@@ -71,6 +73,16 @@ int main(int argc, char* argv[])
     print_tree(global_table[i].p, 0);
   }
   sema_run_global_analysis();
+
+  printf("\n--- STARTING CODE GENERATION PASS ---\n");
+  
+  // Define your compiled assembly file destination name
+  char* out_filename = "output.gasm"; 
+  
+  printf("Emitting native assembly stream to: %s\n", out_filename);
+  init_code_gen(out_filename); 
+  
+  printf("Code Generation Pass: Success! Compilation complete.\n");
   
   free(source);
   return 0;

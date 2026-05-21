@@ -44,6 +44,7 @@ typedef struct Node {
             struct Node* args; 
             struct Node* body;
             TokenType returntype; 
+            int localvarbyte;
         } func;
 
         struct {

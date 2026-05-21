@@ -1,0 +1,38 @@
+global_x
+  CALL __init_globals
+  CALL main
+  HALT
+LABEL __init_globals
+  PUSH 7
+  PUSH [global_x]
+  POKE
+  RET
+FUNC factorial
+  PEEKL -12
+  PUSH 0
+  JNE .L_exit_0
+  PUSH 1
+  STORE 0
+  RET
+  JMP .L_exit_0
+LABEL .L_exit_0
+  PEEKL -12
+  PEEKL -12
+  PUSH 1
+  SUB
+  CALL factorial
+  POP
+  LOAD 0
+  MUL
+  STORE 0
+  RET
+  RET
+FUNC main
+  PUSH [global_x]
+  PEEK
+  CALL factorial
+  POP
+  LOAD 0
+  PRINT
+  RET
+  RET
