@@ -5,6 +5,8 @@
 #include <string.h>
 
 int tp = 0;
+char* source;
+Token* tokens;
 int cap = 128;
 void pushToken(int Type,int ind,int len,int line)
 {
@@ -35,6 +37,12 @@ int findlen(int i, char* code)
   {
     int l = 1;
     while(code[i+l]!='"' && code[i+l] != '\0')l++;
+    return l+1;
+  }
+  else if(c == '\'')
+  {
+    int l = 1;
+    while(code[i+l] != '\'' && code[i+l] != '\0') l++;
     return l+1;
   }
   else if(isdigit(c))
@@ -86,6 +94,7 @@ TokenType tokenize(char* c,int i,int l)
     }
   }
   else if(c[i] == '"')return T_STRING;
+  else if(c[i] == '\'')return T_CHAR;
   else
   {
     if(isdigit(c[i]))
@@ -145,6 +154,7 @@ TokenType tokenize(char* c,int i,int l)
           if (c[i] == 'u' && c[i+1] == 'n' && c[i+2] == 's' && c[i+3] == 'i' && c[i+4] == 'g' && c[i+5] == 'n' && c[i+6] == 'e' && c[i+7] == 'd') return K_UNSIGNED;
           if (c[i] == 'v' && c[i+1] == 'o' && c[i+2] == 'l' && c[i+3] == 'a' && c[i+4] == 't' && c[i+5] == 'i' && c[i+6] == 'l' && c[i+7] == 'e') return K_VOLATILE;
           if (c[i] == 'r' && c[i+1] == 'e' && c[i+2] == 'g' && c[i+3] == 'i' && c[i+4] == 's' && c[i+5] == 't' && c[i+6] == 'e' && c[i+7] == 'r') return K_REGISTER;
+          if (c[i] == 'c' && c[i+1] == 'o' && c[i+2] == 'n' && c[i+3] == 't' && c[i+4] == 'i' && c[i+5] == 'n' && c[i+6] == 'u' && c[i+7] == 'e') return K_CONTINUE;
           return T_IDENTIFIER;
           break;
         default:
@@ -203,6 +213,7 @@ Token* init_lexer(char* c)
       type = tokenize(c,p,l);
       printf("::%d\n",type);
     }
+    else if(c[p] == '\'') type = T_CHAR;
     else 
     {  
       type = c[p];

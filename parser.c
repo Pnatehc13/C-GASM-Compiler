@@ -6,6 +6,11 @@
 
 int tp1 = 0;
 int gbr = 0x100000;
+int bp;
+int sp;
+Globalentry global_table[256];
+int gt_count;
+Record symtab[1024];
 
 Token* peek()
 {
@@ -41,13 +46,14 @@ Token* consume(int t)
   //need to handle the error part properly instead of just exiting 
 }
 
-void add_to_symtab(Token* t, int bp, int isg, int gt,int data_type)
+void add_to_symtab(Token* t, int bp, int isg, int gt,int data_type,int lvl)
 {
   strcpy(symtab[sp].name, gettokenname(t));
   symtab[sp].type = data_type;
   symtab[sp].offset = bp;
   symtab[sp].gt_index = gt;
   symtab[sp].is_global = isg;
+  symtab[sp].ptrlvl = lvl;
   sp++;
 }
 
@@ -71,8 +77,12 @@ int is_type(int t)
   return 0;
 }
 
-void append_node(Node* n)
+void append_node(Node* node)
 {
+  Node* n = node;
+  while (n && n->type == NODE_POINTER) {
+      n = n->unary.expr;
+  }
   if (n->type == NODE_FUNC || n->type == NODE_GVAR) 
   {
     strcpy(global_table[gt_count].name, n->func.name);
@@ -123,8 +133,8 @@ int get_precedence(int t) {
     case T_NEQ:    
       return 20;
     case '=':
-      return 10;
-    
+      return 0;
+     
     default:
       return 0;
   }
@@ -135,6 +145,22 @@ Node* nud()
 {
   printf("Got into nud!\n");
   Token* t = peek();
+  if(t->type == '*')
+  {
+    advance();
+    Node* n = new_node(NODE_POINTER);
+    n->token_id = tp1-1;
+    n->unary.expr = parse_expression(90);
+    return n; 
+  }
+  else if(t->type == '&')
+  {
+    advance();
+    Node* n = new_node(NODE_ADDR);
+    n->token_id = tp1-1;
+    n->unary.expr = parse_expression(90);
+    return n;
+  }
   if(t->type == T_INT)
   {
     
@@ -145,22 +171,72 @@ Node* nud()
     
     return n;
   }
+  if(t->type == '(')
+  {
+    advance(); // Consume the opening '(' 
+    Node* inner_expr = parse_expression(0); 
+    consume(')'); // Ensure there is a matching closing ')'
+    return inner_expr; // Return the inner expression node directly!
+  }
+  if(t->type == T_CHAR)
+  {
+    Node* n = new_node(NODE_INT);
+    n->token_id = tp1;
+    char* raw_char = gettokenname(t);
+    if (raw_char[1] == '\\') 
+    {
+      if (raw_char[2] == 'n') n->int_val = 10;  
+      else if (raw_char[2] == 't') n->int_val = 9;  
+      else if (raw_char[2] == '0') n->int_val = 0;  
+      else n->int_val = raw_char[2];
+    }
+    else n->int_val = raw_char[1];
+    free(raw_char);
+    advance();
+    
+    return n;
+  }
   if(t->type == T_IDENTIFIER)
   {  
     printf("in nud -> is T_IDENTIFIER\n");
-    Node* n = new_node(NODE_VAR);
-    n->token_id = tp1;
     int id = find_symbol(gettokenname(t));
-    if (id == -1) { n->var.offset = 0; }
-    else {n->var.offset = symtab[id].offset;}
+    Node* n;
+    if (id != -1 && symtab[id].is_global) {
+      n = new_node(NODE_GVAR);
+      n->gvar.offset = symtab[id].offset;
+      n->gvar.name = _strdup(symtab[id].name);
+      n->gvar.dt = symtab[id].type;
+    }
+    else 
+    {
+      n = new_node(NODE_VAR);
+      if (id == -1) { n->var.offset = 0; }
+      else {n->var.offset = symtab[id].offset;n->var.dt = symtab[id].type;}
+    }
+    n->token_id = tp1;
     advance();
-    return n;
+    Node* current_node = n;
+    
+    while(match('['))
+    {
+      consume('[');
+      Node* array_node = new_node(NODE_BIN);
+      array_node->bin.op = '[';
+      array_node->bin.left = current_node;
+
+      array_node->bin.right = parse_expression(0);
+      consume(']');
+      current_node = array_node;
+    }
+    
+    return current_node;
   }
   if(t->type == '"' || t->type == T_STRING)
   {
     printf("in nud -> is T_STRING\n");
     Node* n = new_node(NODE_STR);
     n->token_id = tp1;     
+    n->str.string = strdup(gettokenname(t));
     advance(); 
     return n;
   }
@@ -289,22 +365,17 @@ Node* led(Node* left)
     Token* name_token = &tokens[left->token_id]; 
     node->func.name = _strdup(gettokenname(name_token));
     Node** args = &(node->func.args);
+    int call_arg_count = 0;
     while (!match(')')) 
     {
+      call_arg_count++;
       *args  = parse_expression(0);
       args = &((*args)->next);
       if(match(','))consume(',');
     }
     consume(')');
+    node->func.argcount = call_arg_count;
     return node;
-  }
-  else if(op->type == '=') {
-    Node* node = new_node(NODE_ASSIGN);
-    node->token_id = left->token_id;
-    int id = find_symbol(gettokenname(&tokens[node->token_id]));
-    if (id != -1) node->var.offset = symtab[id].offset;
-    node->var.value = parse_expression(get_precedence('=') - 1);
-    return node; 
   }
   else 
   {
@@ -313,6 +384,7 @@ Node* led(Node* left)
     node->bin.left = left;
     printf(" currently in led ,get_precedence for the token %d is %d\n",op->type, get_precedence(op->type));
     node->bin.right = parse_expression(get_precedence(op->type));
+    if(node->bin.left) node->bin.left->next = NULL;
     return node;
   }
 }
@@ -381,27 +453,38 @@ Node* parse_function()
     Node* n = new_node(NODE_FUNC);
     n->func.name = gettokenname(f_tok);
     n->func.returntype = rt->type;
-    add_to_symtab(f_tok, gt_count, 1,gt_count,rt->type);
+    add_to_symtab(f_tok, gt_count, 1,gt_count,rt->type,0);
     bp = -12; 
     consume('(');
     Node** arg_ptr = &(n->func.args); 
     int curr_gt_ind = gt_count;
+    int argcount = 0;
     while (!match(')')) {
         if (is_type(peek()->type)) {
             Token* type_tok = advance(); 
+
+            int count = 0;
+            while(match('*'))
+            {
+                consume('*');
+                count++;
+            }
+            
             Token* a_tok = consume(T_IDENTIFIER);
             
-            add_to_symtab(a_tok, bp,0,curr_gt_ind,type_tok->type);
+            add_to_symtab(a_tok, bp,0,curr_gt_ind,type_tok->type,count);
             bp -= 4;
 
             *arg_ptr = new_node(NODE_VAR);
             (*arg_ptr)->token_id = tp1-1;
-            (*arg_ptr)->var.dt = type_tok->type;
+            (*arg_ptr)->var.dt = type_tok->type;            
             arg_ptr = &((*arg_ptr)->next);
         }
+        argcount++;
         if (match(',')) advance(); 
     }
     consume(')');
+    n->func.argcount = argcount;
     if(match(';'))
     {  consume(';');n->func.body = NULL;}
     else{
@@ -417,19 +500,50 @@ Node* parse_declaration()
   printf("Entering parse dec\n");
   if(!is_type(peek()->type)) exit(1); 
   Token* rt = advance();
+  int count = 0;
+  int ft = rt->type;
+  while(match('*'))
+  {
+    consume('*');
+    count++;
+  }
   Token* d_tok = consume(T_IDENTIFIER); 
+  int tid = tp1-1;
   Node* n = new_node(NODE_VAR);
-  n->var.dt = rt->type;
+  int isarray = 0;
+  int dc = 0;
+  int te = 1;
+  
+  n->var.dt = ft;
   n->var.offset = bp;
-  n->token_id = tp1 - 1; // Index of d_tok
-  add_to_symtab(d_tok,bp,0,gt_count,rt->type);
-  bp+=4;
+  n->token_id = tid; // Index of d_tok
+  add_to_symtab(d_tok,bp,0,gt_count,ft,count);
+  int id = find_symbol(gettokenname(d_tok));
+
+  while(match('['))
+  {
+    consume('[');
+    int currsize = atoi(gettokenname(consume(T_INT)));
+    consume(']');
+    symtab[id].dim_size[dc] = currsize;
+    dc++;
+    te = te*currsize;
+    isarray = 1;
+    
+  }
+  symtab[id].dim_cnt = dc;
+  symtab[id].size = te;
+  symtab[id].isarray = isarray;
+  
+  bp+=(4*te);
+  
   if(peek()->type == '=')
   {
     advance();
     n->var.value = parse_expression(0);
   }
   consume(';');
+  n->next = NULL;
   return n;
 }
 
@@ -438,19 +552,27 @@ Node* parse_global_declaration()
   printf("Entering parse global dec\n");
   if(!is_type(peek()->type)) exit(1); 
   Token* rt = advance();
+  int count = 0;
+  while(match('*'))
+  {
+    consume('*');
+    count++;
+  }
   Token* d_tok = consume(T_IDENTIFIER); 
   Node* n = new_node(NODE_GVAR);
   n->gvar.name = gettokenname(d_tok);
   n->gvar.dt = rt->type;
   n->gvar.offset = gbr;
   n->token_id = tp1 - 1; // Index of d_tok
-  gbr += 4;
-  add_to_symtab(d_tok,gt_count,1,gt_count,rt->type);
+  add_to_symtab(d_tok,gbr,1,gt_count,rt->type,count);
+  gbr+=4;
+  
   if(peek()->type == '=')
   {
     advance();
     n->gvar.value = parse_expression(0);
   }
+  n->next = NULL;
   consume(';');
   return n;
 }
@@ -495,7 +617,27 @@ Node* parse_for()
   Node* init = parse_statement();
   Node* cond = parse_expression(0);
   consume(';');
-  Node* post_expr = parse_expression(0);
+  Node* post_expr = NULL;
+  Node* left = parse_expression(0);
+  if (peek()->type == '=')
+  {
+    consume('=');
+    post_expr = new_node(NODE_ASSIGN);
+    post_expr->token_id = left->token_id;
+    char* var_name = gettokenname(&tokens[post_expr->token_id]);
+    int sym_idx = find_symbol(var_name);
+    if (sym_idx != -1) {
+          post_expr->var.offset = symtab[sym_idx].offset;
+    }
+    post_expr->bin.left = left;
+    post_expr->bin.op = '=';
+    post_expr->bin.right = parse_expression(0);
+    
+  }
+  else 
+  post_expr = left;
+  
+  
   consume(')');
 
   Node* body = parse_statement();
@@ -503,6 +645,7 @@ Node* parse_for()
   Node* wnode = new_node(NODE_WHILE);
   wnode->token_id = for_idx;
   wnode->flow.cond = cond;
+  wnode->flow.isfor = 1;
 
   if (body->type != NODE_BLOCK) {
       Node* nblock = new_node(NODE_BLOCK);
@@ -567,28 +710,55 @@ Node* parse_statement()
       return parse_if_stmt();
     case K_WHILE:
       return parse_while();
+    case K_BREAK:
+    {
+      Node* n = new_node(NODE_BREAK);
+      n->unary.expr = NULL;
+      consume(K_BREAK);
+      consume(';');
+      return n;
+    }
+    case K_CONTINUE:
+    {
+      Node* n = new_node(NODE_CONTINUE);
+      n->unary.expr = NULL;
+      consume(K_CONTINUE);
+      consume(';');
+      return n;
+    }
     case K_FOR:
       return parse_for();
     case K_RETURN:
       return parse_return();
       break;
     default:
-      if (tokens[tp1].type == T_IDENTIFIER && tokens[tp1 + 1].type == '=')
+      printf("going into parse_expression\n");
+      Node* left = parse_expression(0);
+      if (peek()->type == '=')
       {
-        Token* var_tok = consume(T_IDENTIFIER);
         consume('=');
         Node* n = new_node(NODE_ASSIGN);
-        n->token_id = tp1 - 2; // Index of var_tok
-        int id = find_symbol(gettokenname(var_tok));
+        Node* base_var = left;
+        while (base_var && base_var->type == NODE_POINTER) {
+            base_var = base_var->unary.expr;
+        }
+        n->token_id = base_var->token_id; // Index of var_tok
 
-        if (id != -1)n->var.offset = symtab[id].offset;
-
-        n->var.value = parse_expression(0);
+        char* var_name = gettokenname(&tokens[n->token_id]);
+        int sym_idx = find_symbol(var_name);
+        if (sym_idx != -1) {
+            n->var.offset = symtab[sym_idx].offset; // Bind the real stack offset!
+        } else {
+            n->var.offset = 0;
+        }
+        
+        n->bin.left = left;
+        n->bin.op = '=';
+        n->bin.right = parse_expression(0);
         consume(';');
         return n;
       }
-      printf("going into parse_expression\n");
-      Node* n = parse_expression(0); 
+      
       if (peek()->type == 59) {
           printf("Successfully consumed semicolon at index %d\n", tp1);
           advance(); // Move past the ';' so the next loop sees the '}'
@@ -596,7 +766,7 @@ Node* parse_statement()
         printf("Parser Error: Missing semicolon\n");
         exit(1);
       }
-      return n;
+      return left;
       
   }
 }

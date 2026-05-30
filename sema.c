@@ -6,11 +6,55 @@
 #include <string.h>
 
 
+
+
 void sema_error(char* message, int line) {
     printf("Semantic Error (Line %d): %s\n", line, message);
     exit(1);
 }
 Node* current_function = NULL;
+
+TokenType get_node_type(Node* n)
+{
+    if(!n)return T_VOID;
+    switch(n->type)
+    {
+        case NODE_INT: return T_INT;
+        case NODE_STR : return T_STRING;
+        case NODE_VAR:
+        {
+            char* name = gettokenname(&tokens[n->token_id]);
+            int id = find_symbol(name);
+            if (id == -1) sema_error("Undeclared variable context", tokens[n->token_id].line);
+            return symtab[id].type + (symtab[id].ptrlvl * 1000);
+        }
+        case '[':
+        {
+            return get_node_type(n->bin.left);
+        }
+        case NODE_GVAR:
+        {
+            int id = find_symbol(n->gvar.name);
+            return symtab[id].type+(symtab[id].ptrlvl * 1000);
+        }
+        case NODE_POINTER:
+        {
+            TokenType child_t = get_node_type(n->unary.expr);
+            if (child_t < 1000) {
+                sema_error("Cannot dereference a non-pointer type", tokens[n->token_id].line);
+            }
+            return child_t - 1000;
+        }
+        case NODE_ADDR:
+        {
+            TokenType child_t = get_node_type(n->unary.expr);
+            return child_t + 1000;
+        }
+        case NODE_BIN:return T_INT;
+        default : return T_VOID;
+    }
+}
+
 
 TokenType sema_analyze(Node* n) 
 {
@@ -23,30 +67,57 @@ TokenType sema_analyze(Node* n)
             return T_STRING;
         case NODE_ASSIGN:
         {
-            char* vn = gettokenname(&tokens[n->token_id]);
-            int sym_idx = find_symbol(vn);
-            if (sym_idx == -1) {
-                char err_msg[128];
-                sprintf(err_msg, "Undeclared variable '%s'", vn);
-                sema_error(err_msg, tokens[n->token_id].line);
-            }
+            TokenType left_type = get_node_type(n->bin.left);
+            TokenType right_type = get_node_type(n->bin.right);
+            int is_string_ptr_assign = (left_type == (K_CHAR + 1000) && right_type == T_STRING);
             
-            TokenType var_type = symtab[sym_idx].type;
-            TokenType expr_type = sema_analyze(n->var.value);
-            
-            int types_match = (var_type == expr_type) || 
-                              (var_type == K_INT && expr_type == T_INT) ||
-                              (var_type == T_INT && expr_type == K_INT);
-
-            if (!types_match) {
+            int types_match = is_string_ptr_assign || 
+                              (left_type == right_type) || 
+                              (left_type == K_INT && right_type == T_INT) ||
+                              (left_type == T_INT && right_type == K_INT) ||
+                              (left_type == K_CHAR && right_type == T_INT);
+            if (!types_match) 
+            {
                 sema_error("Type mismatch in variable assignment", tokens[n->token_id].line);
             }
-            return expr_type;
+            return right_type;
         }
         case NODE_BLOCK:
         {
             sema_analyze(n->func.body);
             break;
+        }
+        case '=':
+        {
+            Node* lhs = n->bin.left;
+            Node* rhs = n->bin.right;
+
+            TokenType lhs_type = sema_analyze(lhs);
+            TokenType rhs_type = sema_analyze(rhs);
+            if (lhs->type != NODE_VAR && lhs->type != NODE_GVAR && (lhs->type != NODE_BIN || lhs->bin.op != '[')) {
+                sema_error("Left-hand side of assignment must be a valid variable or array element", tokens[n->token_id].line);
+            }
+
+            if (lhs_type != rhs_type) {
+                sema_error("Type mismatch across assignment operator", tokens[n->token_id].line);
+            }
+
+            return lhs_type;
+        }
+        case '[':
+        {
+            Node* base_var = n->bin.left;
+            Node* index_expr = n->bin.right;
+            TokenType index_type = sema_analyze(index_expr);
+            if (index_type != T_INT) {
+                sema_error("Array subscript index must resolve to an integer type", tokens[n->token_id].line);
+            }
+            TokenType base_type = get_node_type(base_var);
+            if (base_var) {
+                sema_analyze(base_var);
+            }
+            
+            return base_type;
         }
         case NODE_FUNC:
             current_function = n;
@@ -54,36 +125,57 @@ TokenType sema_analyze(Node* n)
                 sema_analyze(n->func.body);
             current_function = NULL;
             break;
+
+        case NODE_GVAR: 
+        {
+            return n->gvar.dt; 
+        }
         case NODE_VAR:
-            if(n->var.dt != 0)
+        {
+            char* vn = gettokenname(&tokens[n->token_id]);
+            int sym_idx = find_symbol(vn);
+            if(sym_idx == -1)
             {
-                if(n->var.value)
+                char err_msg[128];
+                sprintf(err_msg, "Undeclared variable '%s'", vn);
+                sema_error(err_msg, tokens[n->token_id].line);
+            }
+            if (n->var.value) 
+            {
+                TokenType t = sema_analyze(n->var.value);
+                TokenType my_type = symtab[sym_idx].type + (symtab[sym_idx].ptrlvl * 1000);
+
+                int is_string_ptr_assign = (my_type == (K_CHAR + 1000) && t == T_STRING);
+                if (!is_string_ptr_assign) 
                 {
-                    TokenType t = sema_analyze(n->var.value);
-                    int types_match = (t == n->var.dt) || (n->var.dt == K_INT && t == T_INT);
-                    if (!types_match) 
-                    {
-                        
-                        sema_error("Type mismatch in variable initialization", tokens[n->token_id].line);
+                    int bm = my_type%1000;
+                    int b = t%1000;
+                    int pointer_levels_match = (my_type / 1000) == (t / 1000);
+                    int base_types_match = (bm == b) || 
+                                            (bm == K_INT && b == T_INT) ||
+                                            (bm == T_INT && b == K_INT) ||
+                                            (bm == K_CHAR && b == T_INT);
+                    
+                    if (!pointer_levels_match || !base_types_match) 
+                    {    
+                        sema_error("Type mismatch in variable initialization", tokens[n->token_id].line); 
                     }
                 }
-                return n->var.dt;
             }
-            else
-            {
-                char* vn = gettokenname(&tokens[n->token_id]);
-                int sym_idx = find_symbol(vn);
-                if (sym_idx == -1) {
-                    char err_msg[128];
-                    sprintf(err_msg, "Undeclared variable '%s'", vn);
-                    sema_error(err_msg, tokens[n->token_id].line);
-                }
-                n->var.dt = symtab[sym_idx].type;
-                n->var.offset = symtab[sym_idx].offset;
-                return n->var.dt;
-            }
-            break;
-        
+            return symtab[sym_idx].type + (symtab[sym_idx].ptrlvl * 1000);
+        }
+        case NODE_ADDR:
+        {
+           TokenType t = sema_analyze(n->unary.expr);
+           return t+1000;
+        }
+
+        case NODE_POINTER:
+        {
+            TokenType t = sema_analyze(n->unary.expr);
+            if(t<1000) sema_error("Cannot dereference non-pointer type", tokens[n->token_id].line); 
+            return t-1000;
+        }
         
         case NODE_BIN:
         {
@@ -224,7 +316,12 @@ void sema_run_global_analysis()
     {
         if (global_table[i].p != NULL) 
         {
-            sema_analyze(global_table[i].p);
+            Node* entry = global_table[i].p;
+            while(entry && entry->type == NODE_POINTER)
+            {
+                entry = entry->unary.expr;
+            }
+            sema_analyze(entry);
         }
     }
     printf("Sema Pass: Success! Abstract Syntax Tree is verified and decorated.\n");

@@ -1,12 +1,15 @@
 #ifndef LEXER_H_
 #define LEXER_H_
 
-char* source;
-int tp;
+extern char* source;
+extern int tp;
 typedef enum 
 {
   T_IDENTIFIER = 256,
   T_INT,
+  P_INT,
+  P_CHAR,
+  T_CHAR,
   T_STRING,
   T_VOID,
   T_LEQ,
@@ -27,6 +30,7 @@ typedef enum
   K_AUTO,
   K_WHILE,
   K_BREAK,
+  K_CONTINUE,
   K_SHORT,
   K_CONST,
   K_RETURN,
@@ -54,7 +58,7 @@ typedef struct {
 } Token;
 
 
-Token* tokens;
+extern Token* tokens;
 
 Token* init_lexer(char* source_code);
 char* gettokenname(Token* t);
