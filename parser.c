@@ -220,16 +220,14 @@ Node* nud()
     while(match('['))
     {
       consume('[');
-      Node* array_node = new_node(NODE_BIN);
-      array_node->bin.op = '[';
-      array_node->bin.left = current_node;
-
-      array_node->bin.right = parse_expression(0);
+      Node* array_node = new_node(NODE_ARR_ACCESS);
+      current_node->indnxt = array_node;
+      array_node->unary.expr = parse_expression(0);
       consume(']');
       current_node = array_node;
     }
     
-    return current_node;
+    return n;
   }
   if(t->type == '"' || t->type == T_STRING)
   {
@@ -565,7 +563,27 @@ Node* parse_global_declaration()
   n->gvar.offset = gbr;
   n->token_id = tp1 - 1; // Index of d_tok
   add_to_symtab(d_tok,gbr,1,gt_count,rt->type,count);
-  gbr+=4;
+  int id = find_symbol(gettokenname(d_tok));
+  int isarray = 0;
+  int dc = 0;
+  int te = 1;
+
+  while(match('['))
+  {
+    consume('[');
+    int currsize = atoi(gettokenname(consume(T_INT)));
+    consume(']');
+    symtab[id].dim_size[dc] = currsize;
+    dc++;
+    te = te*currsize;
+    isarray = 1;
+    
+  }
+  symtab[id].dim_cnt = dc;
+  symtab[id].size = te;
+  symtab[id].isarray = isarray;
+  
+  gbr+=4*te;
   
   if(peek()->type == '=')
   {

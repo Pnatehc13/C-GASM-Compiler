@@ -38,6 +38,7 @@ void gen_return(Node* n) {
   {
     gen_code(n->ret.value);
     fprintf(out, "  STORE 0\n");
+    //fprintf(out, "  POP\n");
   }
   fprintf(out, "  RET\n");
 }
@@ -127,13 +128,15 @@ void gen_node_call(Node* n)
   if(strcmp(n->func.name , "printf") == 0)
   {
     fprintf(out, "  PRINT_STR\n");
+    //fprintf(out, "  PUSH 0\n"); 
   }
   else 
   {
     fprintf(out,"  CALL %s\n",n->func.name);
     for(int j =0;j<n->func.argcount;j++)fprintf(out, "  POP\n");
+    fprintf(out, "  LOAD 0\n");
   }
-  fprintf(out, "  LOAD 0\n");
+  
 }
 
 
@@ -174,9 +177,45 @@ void gen_gvar(Node* n)
 void gen_func(Node* n)
 {
   fprintf(out, "FUNC %s\n", n->func.name);
-  for(int i = 0; i < n->func.localvarbyte / 4; i++) { fprintf(out, "  PUSH 0\n");}
+  int slots = (n->func.localvarbyte + 3) / 4;
+  for(int i = 0; i < slots; i++) { fprintf(out, "  PUSH 0\n");}
   if(n->func.body) { gen_code(n->func.body);}
   fprintf(out, "  RET\n");
+}
+
+void gen_ele_pos(Node* n,int id,int i)
+{
+  if(!n)return;
+  gen_code(n->unary.expr);
+  if (debugmode)
+  {
+    int current_dim_limit = symtab[id].dim_size[i-1]; 
+    int trap_id = lc++;
+
+    fprintf(out, "  DUP\n");
+    fprintf(out, "  PUSH %d\n", current_dim_limit);
+    fprintf(out, "  CMP\n");
+    fprintf(out, "  JGE .L_bounds_error_%d\n", trap_id); // Crash if index >= limit
+    
+    fprintf(out, "  DUP\n");
+    fprintf(out, "  PUSH 0\n");
+    fprintf(out, "  CMP\n");
+    fprintf(out, "  JL .L_bounds_error_%d\n", trap_id);  // Crash if index < 0
+    fprintf(out, "  JMP .L_bounds_safe_%d\n", trap_id);  // Skip panic if safe
+
+    fprintf(out, "LABEL .L_bounds_error_%d\n", trap_id);
+    fprintf(out, "  PUSH \"RUNTIME ERROR: Array index out of bounds!\\n\"\n"); 
+    fprintf(out, "  PRINT_STR\n");
+    fprintf(out, "  HALT\n");
+    fprintf(out, "LABEL .L_bounds_safe_%d\n", trap_id);
+  }
+  fprintf(out,"  ADD\n");
+  if(i < symtab[id].dim_cnt)
+  {
+    fprintf(out,"  PUSH %d\n",symtab[id].dim_size[i]);
+    fprintf(out,"  MUL\n");
+    gen_ele_pos(n->indnxt,id,i+1);
+  }
 }
 
 void gen_var_access(Node* n, int is_store)
@@ -184,37 +223,51 @@ void gen_var_access(Node* n, int is_store)
   char* name = gettokenname(&tokens[n->token_id]);
   int id = find_symbol(name);
   int is_global = (id != -1 && symtab[id].is_global);
-  if (is_store) {
-    if(is_global)
-    {
-      fprintf(out, "  PUSH [global_%s]\n", name);
-      fprintf(out, "  POKE\n");
-    }
-    else
-      fprintf(out, "  POKEL %d\n", n->var.offset);
-  }  
-  else 
+
+
+  if(!is_global && !symtab[id].isarray)
   {
-    if(is_global)
-    {
-      fprintf(out, "  PUSH [global_%s]\n", name);
-      fprintf(out, "  PEEK\n");
-    }
-    else
-      fprintf(out, "  PEEKL %d\n", n->var.offset);    
+    if(is_store)fprintf(out, "  POKEL %d\n", n->var.offset);
+    else fprintf(out, "  PEEKL %d\n", n->var.offset);  
+    return;
   }
+  
+  if(is_global)
+  {
+    fprintf(out, "  PUSH [global_%s]\n", name);
+  }
+  else
+  {
+    fprintf(out,"  GETBP\n");
+    fprintf(out,"  PUSH %d\n",n->var.offset);
+    fprintf(out,"  SUB\n");
+  }
+  if(symtab[id].isarray)
+  {
+    fprintf(out,"  PUSH 0\n");
+    gen_ele_pos(n->indnxt,id,1);
+    int scale = 1;
+    if(symtab[id].type == T_INT || symtab[id].type == K_INT)scale = 4;
+    fprintf(out,"  PUSH %d\n",scale);
+    fprintf(out,"  MUL\n");
+    fprintf(out,"  ADD\n");
+  }
+  
+  if (is_store) fprintf(out, "  POKE\n");
+  else fprintf(out, "  PEEK\n"); 
 }
 
 
 void gen_lvalue(Node* n)
 {
   if(!n)return;
+  char* name = gettokenname(&tokens[n->token_id]);
+  int id = find_symbol(name);
   switch(n->type)
   {
     case NODE_VAR:
     {
-      char* name = gettokenname(&tokens[n->token_id]);
-      int id = find_symbol(name);
+      
       if (id != -1 && symtab[id].is_global)fprintf(out, "  PUSH [global_%s]\n", name);
       else 
       {
@@ -234,8 +287,19 @@ void gen_lvalue(Node* n)
       printf("Backend Error: Invalid lvalue write target (Type: %d)\n", n->type);
       exit(1);
   }
+  if(n->indnxt && n->indnxt->type == NODE_ARR_ACCESS)
+  {
+    fprintf(out,"  PUSH 0\n");
+    gen_ele_pos(n->indnxt,id,1);
+    int scale = 1;
+    if(symtab[id].type == T_INT || symtab[id].type == K_INT)scale = 4;
+    fprintf(out,"  PUSH %d\n",scale);
+    fprintf(out,"  MUL\n");
+    fprintf(out,"  ADD\n");
+  }
   
 }
+
 
 
 void gen_code(Node* n)
@@ -286,6 +350,7 @@ void gen_code(Node* n)
           continue;
         }
         gen_code(stmt);
+        //if(stmt->type == NODE_CALL) fprintf(out,"  POP\n");
         stmt = stmt->next;
       }
       break;
@@ -300,7 +365,7 @@ void gen_code(Node* n)
       if (n->var.value) 
       {
          gen_code(n->var.value);
-         gen_var_access(n, 1);
+         gen_var_access(n,1);
       }
       else
       {
@@ -343,17 +408,23 @@ void gen_code(Node* n)
     }
     case NODE_ADDR:
     {
-      char* name = gettokenname(&tokens[n->unary.expr->token_id]);
+      Node* target = n->unary.expr;
+      char* name = gettokenname(&tokens[target->token_id]);
       int id = find_symbol(name);
       if(symtab[id].is_global)
       {
         fprintf(out,"  PUSH [global_%s]\n",name);
       }
-      else
+      else 
       {
-        fprintf(out,"  GETBP\n");
-        fprintf(out,"  PUSH %d\n",symtab[id].offset);
-        fprintf(out,"  SUB\n");
+        fprintf(out, "  GETBP\n  PUSH %d\n  SUB\n", symtab[id].offset);
+      }
+      if(target->indnxt)
+      {
+        fprintf(out, "  PUSH 0\n");
+        gen_ele_pos(target->indnxt, id, 1);
+        int scale = (symtab[id].type == T_INT || symtab[id].type == K_INT) ? 4 : 1;
+        fprintf(out, "  PUSH %d\n  MUL\n  ADD\n", scale);
       }
       break;
     }
@@ -383,7 +454,7 @@ void init_code_gen(char* path)
   }
 
   fprintf(out, "  CALL __init_globals\n");
-  fprintf(out, "  CALL main\n");          
+  fprintf(out, "  CALL main\n");
   fprintf(out, "  HALT\n");
 
   gen_global_initializers(global_table[fgvar].p);

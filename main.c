@@ -1,16 +1,21 @@
 #include <stdio.h>
 #include "lexer.h"
 #include <stdlib.h>
+#include <string.h>
 #include "parser.h"
 #include "sema.h"
 #include "codegen.h"
 
+int debugmode = 0;
 int main(int argc, char* argv[])
 {
+
   if (argc < 2) {
     printf("Error: No input file provided.\n");
     return 1;
   }
+  
+  if(argc == 3 &&strcmp("-debug",argv[2])==0)debugmode = 1;
 
   char* path = argv[1];
   FILE *f = fopen(path, "rb");

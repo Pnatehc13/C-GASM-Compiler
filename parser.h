@@ -6,7 +6,7 @@ typedef enum {
     NODE_FUNC, NODE_BLOCK, NODE_VAR, NODE_INT, 
     NODE_BIN, NODE_IF, NODE_WHILE, NODE_RETURN,
     NODE_CALL, NODE_ASSIGN,NODE_STR,NODE_GVAR,NODE_POINTER,
-    NODE_ADDR,NODE_BREAK,NODE_CONTINUE
+    NODE_ADDR,NODE_BREAK,NODE_CONTINUE,NODE_ARR_ACCESS
 } NodeType;
 
 extern int bp;
@@ -19,7 +19,7 @@ typedef struct Node {
     
     union {
         long int_val;      
-
+        
         struct{
             struct Node* expr;
         } unary;
@@ -75,6 +75,7 @@ typedef struct Node {
             struct Node* value; 
         }ret;
     };
+    struct Node* indnxt;
     struct Node* next;
 } Node;
 
