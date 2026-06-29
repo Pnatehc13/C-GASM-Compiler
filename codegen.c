@@ -11,6 +11,8 @@
 static int loop_stack[MAX_LOOP_NESTING];
 static int lst = 0;
 
+void gen_lvalue(Node* n);
+
 void push_loop(int id) {
     if (lst >= MAX_LOOP_NESTING - 1) {
         printf("Compiler Error: Loops nested too deeply!\n");
@@ -149,17 +151,29 @@ void gen_global_initializers(Node* global_list)
   {
     if(curr->type == NODE_GVAR && curr->gvar.value) 
     {
-      fprintf(out, "  PUSH [global_%s]\n", curr->gvar.name);
-      /*if (curr->gvar.value->type == NODE_ADDR) 
+      char* name = curr->gvar.name;
+      if (curr->gvar.value->next != NULL)
       {
-        Node* target = curr->gvar.value->unary.expr;
-        fprintf(out, "  PUSH [global_%s]\n", target->gvar.name); 
-      } else 
+        Node* currval = curr->gvar.value;
+        int ind = 0;
+        while(currval!=NULL)
+        {
+          fprintf(out, "  PUSH [global_%s]\n",name);
+          int offset =  ind*4;
+          fprintf(out, "  PUSH %d\n",offset);
+          fprintf(out, "  ADD\n");
+          gen_code(currval->unary.expr);          
+          fprintf(out, "  POKE\n");
+          ind++;
+          currval = currval->next;
+        }
+      }
+      else 
       {
-        gen_code(curr->gvar.value);
-      }*/
-      if(curr->gvar.value)gen_code(curr->gvar.value);
-      fprintf(out, "  POKE\n");
+        fprintf(out, "  PUSH [global_%s]\n", curr->gvar.name);
+        if(curr->gvar.value)gen_code(curr->gvar.value);
+        fprintf(out, "  POKE\n");
+      }
     }
     
     curr = curr->next;
@@ -170,7 +184,15 @@ void gen_global_initializers(Node* global_list)
 
 void gen_gvar(Node* n)
 {
-  fprintf(out, "global_%s\n", n->gvar.name);
+  if(!n)return;
+  int id = find_symbol(n->gvar.name);
+  int total_elements = 1;
+  if (id != -1 && symtab[id].isarray)
+  {
+    total_elements = symtab[id].size;
+  }
+  fprintf(out, "global_%s %d\n", n->gvar.name ,total_elements );
+  gen_gvar(n->next);
 }
 
 
@@ -220,10 +242,10 @@ void gen_ele_pos(Node* n,int id,int i)
 
 void gen_var_access(Node* n, int is_store)
 {
+
   char* name = gettokenname(&tokens[n->token_id]);
   int id = find_symbol(name);
   int is_global = (id != -1 && symtab[id].is_global);
-
 
   if(!is_global && !symtab[id].isarray)
   {
@@ -231,7 +253,6 @@ void gen_var_access(Node* n, int is_store)
     else fprintf(out, "  PEEKL %d\n", n->var.offset);  
     return;
   }
-  
   if(is_global)
   {
     fprintf(out, "  PUSH [global_%s]\n", name);
@@ -240,14 +261,21 @@ void gen_var_access(Node* n, int is_store)
   {
     fprintf(out,"  GETBP\n");
     fprintf(out,"  PUSH %d\n",n->var.offset);
-    fprintf(out,"  SUB\n");
+    fprintf(out,"  ADD\n");
   }
   if(symtab[id].isarray)
   {
     fprintf(out,"  PUSH 0\n");
     gen_ele_pos(n->indnxt,id,1);
-    int scale = 1;
-    if(symtab[id].type == T_INT || symtab[id].type == K_INT)scale = 4;
+    int scale = 4;
+    if (symtab[id].ptrlvl == 0 && symtab[id].struct_id != -1)
+    {
+       scale = struct_table[symtab[id].struct_id].size; 
+    }
+    else if (symtab[id].type == K_CHAR || symtab[id].type == T_CHAR)
+    {
+      scale = 1;
+    }
     fprintf(out,"  PUSH %d\n",scale);
     fprintf(out,"  MUL\n");
     fprintf(out,"  ADD\n");
@@ -257,10 +285,56 @@ void gen_var_access(Node* n, int is_store)
   else fprintf(out, "  PEEK\n"); 
 }
 
+int is_node_global(Node* n)
+{
+  if (n->type == NODE_GVAR) return 1;
+   if (n->type == NODE_VAR) 
+   {
+    int id = find_symbol(gettokenname(&tokens[n->token_id]));
+    return symtab[id].is_global;
+   }
+   return 0;
+}
+
+int is_base_local(Node* n)
+{
+  Node* curr = n;
+  while (curr && curr->type == NODE_MEM_ACCESS) 
+  {
+    if (curr->mem.op == T_ARROW) return 0;
+    curr = curr->mem.par_expr;
+  }
+  if (curr) 
+  {
+    char* name =  (curr->type == NODE_VAR || curr->type == NODE_GVAR) ?gettokenname(&tokens[curr->token_id]):"Unknown";
+    int id = find_symbol(name);
+
+    printf("[DEBUG] is_base_local: name='%s', type=%d, symtab_id=%d, is_global=%d\n",
+               name, curr->type, id, (id != -1) ? symtab[id].is_global : -1);
+               
+    if (curr->type == NODE_VAR && id != -1 && !symtab[id].is_global) return 1;
+    
+  }
+  return 0;
+}
 
 void gen_lvalue(Node* n)
 {
   if(!n)return;
+
+  if(n->type == NODE_MEM_ACCESS)
+  {
+    if(n->mem.op == T_ARROW)
+    {gen_code(n->mem.par_expr);}
+    else 
+    {gen_lvalue(n->mem.par_expr);}
+    
+    fprintf(out, "  PUSH %d\n", n->mem.offset);
+    //need to add global support to make it prope
+    fprintf(out, "  ADD\n");
+    return;
+  }
+  
   char* name = gettokenname(&tokens[n->token_id]);
   int id = find_symbol(name);
   switch(n->type)
@@ -273,7 +347,7 @@ void gen_lvalue(Node* n)
       {
         fprintf(out,"  GETBP\n");
         fprintf(out,"  PUSH %d\n",n->var.offset);
-        fprintf(out,"  SUB\n");
+        fprintf(out,"  ADD\n");
       }
       break;
     }
@@ -291,8 +365,15 @@ void gen_lvalue(Node* n)
   {
     fprintf(out,"  PUSH 0\n");
     gen_ele_pos(n->indnxt,id,1);
-    int scale = 1;
-    if(symtab[id].type == T_INT || symtab[id].type == K_INT)scale = 4;
+    int scale = 4;
+    if (symtab[id].ptrlvl == 0 && symtab[id].struct_id != -1)
+    {
+       scale = struct_table[symtab[id].struct_id].size;
+    }
+    else if (symtab[id].type == K_CHAR || symtab[id].type == T_CHAR)
+    {
+      scale = 1;
+    }
     fprintf(out,"  PUSH %d\n",scale);
     fprintf(out,"  MUL\n");
     fprintf(out,"  ADD\n");
@@ -318,6 +399,36 @@ void gen_code(Node* n)
       }
       if(active_id < 0 )fprintf(out, "  JMP .L_end_%d\n", -active_id);
       else fprintf(out, "  JMP .L_end_%d\n", active_id);
+      break;
+    }
+    case NODE_POSTINC:
+    case NODE_POSTDEC:
+    {
+      gen_lvalue(n->unary.expr);
+      fprintf(out,"  DUP\n");
+      fprintf(out,"  PEEK\n");
+      fprintf(out,"  SWAP\n");
+      fprintf(out,"  DUP\n");
+      fprintf(out,"  PEEK\n");
+      fprintf(out,"  PUSH 1\n");
+      if(n->type == NODE_POSTINC) fprintf(out,"  ADD\n");
+      else fprintf(out,"  SUB\n");
+      fprintf(out,"  POKE\n");
+      break;
+    }
+    case NODE_PREINC:
+    case NODE_PREDEC:
+    {
+      gen_lvalue(n->unary.expr);
+      fprintf(out,"  DUP\n");
+      fprintf(out,"  PEEK\n");
+      fprintf(out,"  PUSH 1\n");
+      if(n->type == NODE_PREINC) fprintf(out,"  ADD\n");
+      else fprintf(out,"  SUB\n");
+      fprintf(out,"  DUP2\n");
+      fprintf(out,"  POKE\n");
+      fprintf(out,"  SWAP\n");
+      fprintf(out,"  POP\n");
       break;
     }
     case NODE_CONTINUE:
@@ -357,20 +468,58 @@ void gen_code(Node* n)
     }
     case NODE_GVAR:
     {
+      
       gen_var_access(n, 0); 
+      break;
+    }
+
+    case NODE_MEM_ACCESS:
+    {
+      gen_lvalue(n);
+      fprintf(out,"  PEEK\n");
       break;
     }
     case NODE_VAR:
     {
-      if (n->var.value) 
-      {
-         gen_code(n->var.value);
-         gen_var_access(n,1);
-      }
-      else
-      {
-        gen_var_access(n,0);
-      }
+      Node* currnode = n;
+        char* name = gettokenname(&tokens[currnode->token_id]);
+        int id = find_symbol(name);
+        if (currnode->var.value && symtab[id].isarray)
+        {
+          Node* curr = currnode->var.value;
+          int ind = 0;
+          while(curr!=NULL)
+          {
+            gen_code(curr->unary.expr);
+            int offset = currnode->var.offset + ind*4;
+            fprintf(out, "  POKEL %d\n", offset);
+            ind++;
+            curr = curr->next;
+          }
+        }
+        else if(currnode->var.value && symtab[id].struct_id != -1)
+        {
+          int sid = symtab[id].struct_id;
+          Node* curr = currnode->var.value;
+          int ind = 0;
+          while(curr !=NULL && ind < struct_table[sid].count)
+          {
+            gen_code(curr->unary.expr);
+            int offset = currnode->var.offset + struct_table[sid].offset[ind];
+            fprintf(out, "  POKEL %d\n", offset);
+            ind++;
+            curr = curr->next;
+          }
+        }
+        else if (currnode->var.value) 
+        {
+            gen_code(currnode->var.value);
+            gen_var_access(currnode, 1);
+        }
+        else
+        {
+          gen_var_access(currnode,0);
+        }
       break;
     }
     case NODE_BIN:
@@ -400,6 +549,7 @@ void gen_code(Node* n)
     case NODE_CALL:
       gen_node_call(n);
       break;
+    
     case NODE_POINTER:
     {
       gen_lvalue(n);
@@ -417,13 +567,21 @@ void gen_code(Node* n)
       }
       else 
       {
-        fprintf(out, "  GETBP\n  PUSH %d\n  SUB\n", symtab[id].offset);
+        fprintf(out, "  GETBP\n  PUSH %d\n  ADD\n", symtab[id].offset);
       }
       if(target->indnxt)
       {
         fprintf(out, "  PUSH 0\n");
         gen_ele_pos(target->indnxt, id, 1);
-        int scale = (symtab[id].type == T_INT || symtab[id].type == K_INT) ? 4 : 1;
+        int scale = 4;
+        if (symtab[id].ptrlvl == 0 && symtab[id].struct_id != -1)
+        {
+          scale = struct_table[symtab[id].struct_id].size;
+        }
+        else if (symtab[id].type == K_CHAR || symtab[id].type == T_CHAR)
+        {
+          scale = 1;
+        }
         fprintf(out, "  PUSH %d\n  MUL\n  ADD\n", scale);
       }
       break;

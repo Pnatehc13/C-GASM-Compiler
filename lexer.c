@@ -30,6 +30,7 @@ int line = 1;
 int findlen(int i, char* code)
 {
   char c = code[i];
+  if(c == '-' && code[i+1] == '>')return 2;
   if((c == '<' || c == '>' || c == '=' || c == '!'|| c == '+' || c == '-') && code[i+1] == '=')return 2;
   else if((c == '+' && code[i+1] == '+' )|| (c == '-' && code[i+1] == '-') ||(c == '>' && code[i+1] == '>')||(c == '<' && code[i+1] == '<') )return 2;
   else if(c == '('||c == ')'||c == '{'||c == '}'||c == ';')return 1;
@@ -83,6 +84,8 @@ TokenType tokenize(char* c,int i,int l)
       default : break;
     }
   }
+  else if(c[i] == '+' && c[i+1] == '+')return T_INC;
+  else if(c[i] == '-' && c[i+1] == '-')return T_DEC;
   else if((c[i] == '<' || c[i] == '>' || c[i] == '=' || c[i] == '!' || c[i] == '+'||c[i] == '-') && c[i+1] == '=')
   {
     switch(c[i])
@@ -193,7 +196,13 @@ Token* init_lexer(char* c)
     int l = 0;
     int type = -1;
     l = findlen(p,c);
-    if(isdigit(c[p]))
+    if(c[p] == '+' && c[p+1] == '+')type = T_INC;
+    else if(c[p] == '-' && c[p+1] == '-')type = T_DEC;
+    else if(c[p] == '-' && c[p+1] == '>')
+    {
+      type = T_ARROW;
+    }
+    else if(isdigit(c[p]))
     {
       int f = checknum(c,p,l);
       type = T_INT;

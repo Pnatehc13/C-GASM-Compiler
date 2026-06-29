@@ -51,8 +51,32 @@ TokenType get_node_type(Node* n)
             return child_t + 1000;
         }
         case NODE_BIN:return T_INT;
+        case NODE_MEM_ACCESS: return n->mem.dt;
         default : return T_VOID;
     }
+}
+
+int types_are_compatible(TokenType expected, TokenType actual) {
+    if (expected == actual) return 1;
+    
+    // Allow string literals to be assigned to char pointers
+    if (expected == (K_CHAR + 1000) && actual == T_STRING) return 1;
+    
+    int exp_base = expected % 1000;
+    int act_base = actual % 1000;
+    int exp_ptr  = expected / 1000;
+    int act_ptr  = actual / 1000;
+    
+    // Pointer layers must match, and underlying primitives must align
+    if (exp_ptr == act_ptr) {
+        if ((exp_base == act_base) || 
+            (exp_base == K_INT && act_base == T_INT) ||
+            (exp_base == T_INT && act_base == K_INT) ||
+            (exp_base == K_CHAR && act_base == T_INT)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 
@@ -140,25 +164,70 @@ TokenType sema_analyze(Node* n)
                 sprintf(err_msg, "Undeclared variable '%s'", vn);
                 sema_error(err_msg, tokens[n->token_id].line);
             }
+            TokenType my_type = symtab[sym_idx].type + (symtab[sym_idx].ptrlvl * 1000);
             if (n->var.value) 
             {
-                TokenType t = sema_analyze(n->var.value);
-                TokenType my_type = symtab[sym_idx].type + (symtab[sym_idx].ptrlvl * 1000);
-
-                int is_string_ptr_assign = (my_type == (K_CHAR + 1000) && t == T_STRING);
-                if (!is_string_ptr_assign) 
+                if(n->var.value->next!=NULL)
                 {
-                    int bm = my_type%1000;
-                    int b = t%1000;
-                    int pointer_levels_match = (my_type / 1000) == (t / 1000);
-                    int base_types_match = (bm == b) || 
-                                            (bm == K_INT && b == T_INT) ||
-                                            (bm == T_INT && b == K_INT) ||
-                                            (bm == K_CHAR && b == T_INT);
-                    
-                    if (!pointer_levels_match || !base_types_match) 
-                    {    
-                        sema_error("Type mismatch in variable initialization", tokens[n->token_id].line); 
+                    Node* curr = n->var.value;
+                    int val = 0;
+
+                    if(symtab[sym_idx].struct_id != -1)
+                    {
+                        int struct_id = symtab[sym_idx].struct_id;
+                        while(curr != NULL)
+                        {
+                            if (val >= struct_table[struct_id].count)
+                            {
+                                sema_error("Excess elements in struct initializer list", tokens[n->token_id].line);
+                            }
+                            TokenType ct = sema_analyze(curr->unary.expr);
+                            TokenType member_type = struct_table[struct_id].mem_type[val] + (struct_table[struct_id].isptr[val] * 1000);
+                            if(!types_are_compatible(member_type, ct))
+                            {
+                                sema_error("Type mismatch inside struct initializer", tokens[n->token_id].line);
+                            }
+                            val++;
+                            curr = curr->next;
+                        }
+                        
+                    }
+                    else 
+                    {
+                        while(curr!=NULL)
+                        {
+                            TokenType ct = sema_analyze(curr->unary.expr);
+                            if(!types_are_compatible(my_type,ct))sema_error("Type mismatch inside array initializer", tokens[n->token_id].line);
+                            val++;
+                            curr = curr->next;
+                        }
+                        int limit = symtab[sym_idx].dim_size[0];
+                        if(limit > 0 && val > limit)
+                        {
+                            sema_error("Excess elements in array initializer list", tokens[n->token_id].line);
+                        }
+                    }
+                }
+                else 
+                {
+                    TokenType t = sema_analyze(n->var.value);
+                    TokenType my_type = symtab[sym_idx].type + (symtab[sym_idx].ptrlvl * 1000);
+
+                    int is_string_ptr_assign = (my_type == (K_CHAR + 1000) && t == T_STRING);
+                    if (!is_string_ptr_assign) 
+                    {
+                        int bm = my_type%1000;
+                        int b = t%1000;
+                        int pointer_levels_match = (my_type / 1000) == (t / 1000);
+                        int base_types_match = (bm == b) || 
+                                                (bm == K_INT && b == T_INT) ||
+                                                (bm == T_INT && b == K_INT) ||
+                                                (bm == K_CHAR && b == T_INT);
+                        
+                        if (!pointer_levels_match || !base_types_match) 
+                        {    
+                            sema_error("Type mismatch in variable initialization", tokens[n->token_id].line); 
+                        }
                     }
                 }
             }
@@ -193,6 +262,10 @@ TokenType sema_analyze(Node* n)
                 sema_error("Type mismatch in binary operation", tokens[n->token_id].line);
             }
             return T_INT;
+        }
+        case NODE_MEM_ACCESS:
+        {
+            return sema_analyze(n->mem.par_expr);
         }
         case NODE_IF:
         {

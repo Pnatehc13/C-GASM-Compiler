@@ -11,6 +11,8 @@ int sp;
 Globalentry global_table[256];
 int gt_count;
 Record symtab[1024];
+Structentry struct_table[256];
+int st_count = -1;
 
 Token* peek()
 {
@@ -46,6 +48,7 @@ Token* consume(int t)
   //need to handle the error part properly instead of just exiting 
 }
 
+
 void add_to_symtab(Token* t, int bp, int isg, int gt,int data_type,int lvl)
 {
   strcpy(symtab[sp].name, gettokenname(t));
@@ -56,6 +59,14 @@ void add_to_symtab(Token* t, int bp, int isg, int gt,int data_type,int lvl)
   symtab[sp].ptrlvl = lvl;
   sp++;
 }
+
+int find_struct(char* name) {
+    for (int i = 0; i <= st_count; i++) {
+        if (strcmp(struct_table[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
 
 Node* new_node(NodeType t) {
     Node* node = calloc(1,sizeof(Node)); 
@@ -73,7 +84,16 @@ Node* new_bin_node(int op, Node* left, Node* right) {
 
 int is_type(int t)
 {
-  if(t == K_INT || t == K_CHAR || t == K_VOID )return 1;
+  if(t == K_INT || t == K_CHAR || t == K_VOID || t== K_STRUCT)return 1;
+  if(t == T_IDENTIFIER)
+  {
+    char* name = gettokenname(peek());
+    if(find_struct(name) != -1) {
+      free(name);
+      return 1;
+    }
+    free(name);
+  }
   return 0;
 }
 
@@ -113,8 +133,11 @@ int get_precedence(int t) {
     case '}':
     case 0:
       return 0;
+    case T_INC:
+    case T_DEC:
     case '(':
     case '[':
+    case '.':
     case T_ARROW:  
       return 80;
     case '*':
@@ -152,6 +175,25 @@ Node* nud()
     n->token_id = tp1-1;
     n->unary.expr = parse_expression(90);
     return n; 
+  }
+  else if(t->type == '-')
+  {
+    advance();
+    Node* n = new_node(NODE_BIN);
+    n->bin.op = '-';
+    Node* zero = new_node(NODE_INT);
+    zero->int_val = 0;
+    n->bin.left = zero;
+    n->bin.right = parse_expression(90); 
+    return n;
+  }
+  else if(t->type == T_INC || t->type == T_DEC)
+  {
+    advance();
+    Node* n = new_node(t->type == T_INC ? NODE_PREINC : NODE_PREDEC);
+    n->token_id = tp1 - 1;
+    n->unary.expr = parse_expression(70);
+    return n;
   }
   else if(t->type == '&')
   {
@@ -375,6 +417,64 @@ Node* led(Node* left)
     node->func.argcount = call_arg_count;
     return node;
   }
+  else if(op->type == '.' || op->type == T_ARROW)
+  {
+    Node* node = new_node(NODE_MEM_ACCESS);
+    node->token_id = left->token_id;
+    node->mem.op = op->type;
+    node->mem.par_expr = left;
+
+    Token* memtok = consume(T_IDENTIFIER);
+    char* name = gettokenname(memtok);
+
+    int structid = -1;
+    if(left->type == NODE_VAR || left->type == NODE_GVAR)
+    {
+      char* varname = gettokenname(&tokens[left->token_id]);
+      int symidx = find_symbol(varname);
+      if(symidx != -1 && symtab[symidx].struct_id!=-1)
+      {
+        structid = symtab[symidx].struct_id;
+      }
+    }
+    else if(left->type == NODE_MEM_ACCESS)
+    {
+      structid = left->mem.struct_id;
+    }
+    if(structid == -1) 
+    {
+      printf("Error: Left side is not a struct object.\n");
+      exit(1);
+    }
+    int memidx = -1;
+    for(int i =0;i< struct_table[structid].count; i++)
+    {
+      if(strcmp(struct_table[structid].mem_name[i],name) == 0)
+      {
+        memidx = i;
+        break;
+      }
+    }
+    node->mem.offset = struct_table[structid].offset[memidx];
+    if (struct_table[structid].mem_type[memidx] == K_STRUCT) 
+    {
+      node->mem.struct_id = find_struct(struct_table[structid].mem_struct_name[memidx]);
+      node->mem.dt = K_STRUCT;  
+    }
+    else{ 
+      node->mem.struct_id = -1;
+      node->mem.dt = struct_table[structid].mem_type[memidx];
+    }
+    
+    return node;
+  }
+  else if(op->type == T_INC || op->type == T_DEC)
+  {
+    Node* n = new_node(op->type == T_INC ? NODE_POSTINC : NODE_POSTDEC);
+    n->token_id = op->type;
+    n->unary.expr = left;
+    return n;
+  }
   else 
   {
     Node* node = new_node(NODE_BIN);
@@ -409,16 +509,17 @@ Node* parse_block()
   while(!match('}'))
   {
     Node* s = parse_statement();
-    
     if (head == NULL) 
     {
       head = s;
       curr = head;
+      while(curr->next)curr = curr->next;
     } 
     else 
     {
       curr->next = s; 
       curr = s;
+      while(curr->next)curr = curr->next;
     }
   }
   consume('}');
@@ -461,6 +562,18 @@ Node* parse_function()
         if (is_type(peek()->type)) {
             Token* type_tok = advance(); 
 
+            int struct_id = -1;
+            if(type_tok->type == K_STRUCT || type_tok->type == T_IDENTIFIER)
+            {
+              if(type_tok->type == K_STRUCT)type_tok= consume(T_IDENTIFIER);
+              struct_id = find_struct(gettokenname(type_tok));
+              if (struct_id == -1) 
+              {
+                printf("Error: struct %s undefined in function parameters\n", gettokenname(type_tok));
+                exit(1);
+              }
+            }
+            
             int count = 0;
             while(match('*'))
             {
@@ -471,6 +584,8 @@ Node* parse_function()
             Token* a_tok = consume(T_IDENTIFIER);
             
             add_to_symtab(a_tok, bp,0,curr_gt_ind,type_tok->type,count);
+             int id = find_symbol(gettokenname(a_tok));
+            if (id != -1){symtab[id].struct_id = struct_id;}
             bp -= 4;
 
             *arg_ptr = new_node(NODE_VAR);
@@ -496,53 +611,152 @@ Node* parse_function()
 Node* parse_declaration()
 {
   printf("Entering parse dec\n");
-  if(!is_type(peek()->type)) exit(1); 
+  if(!is_type(peek()->type)) exit(1);
+   
   Token* rt = advance();
-  int count = 0;
-  int ft = rt->type;
-  while(match('*'))
+  int base_type = rt->type;
+  int curroffset = 0;
+  Node* head_node = NULL;
+  Node* prev_node = NULL;
+  int base_size = 4;
+  int is_struct =0;
+  int struct_id = -1;
+  if(base_type == K_STRUCT || base_type == T_IDENTIFIER)
   {
-    consume('*');
-    count++;
+    is_struct = 1;
+    if(base_type == K_STRUCT)
+    {
+      rt = consume(T_IDENTIFIER);
+    }
+    struct_id = find_struct(gettokenname(rt));
+    if(struct_id == -1)exit(1);  
+    base_size = struct_table[struct_id].size;
   }
-  Token* d_tok = consume(T_IDENTIFIER); 
-  int tid = tp1-1;
-  Node* n = new_node(NODE_VAR);
-  int isarray = 0;
-  int dc = 0;
-  int te = 1;
   
-  n->var.dt = ft;
-  n->var.offset = bp;
-  n->token_id = tid; // Index of d_tok
-  add_to_symtab(d_tok,bp,0,gt_count,ft,count);
-  int id = find_symbol(gettokenname(d_tok));
-
-  while(match('['))
+  while(1)
   {
-    consume('[');
-    int currsize = atoi(gettokenname(consume(T_INT)));
-    consume(']');
-    symtab[id].dim_size[dc] = currsize;
-    dc++;
-    te = te*currsize;
-    isarray = 1;
+    int count = 0;
+    int ft = base_type;
+    while(match('*'))
+    {
+      consume('*');
+      count++;
+    }
+    if(count > 0)base_size = 4;
+    Token* d_tok = consume(T_IDENTIFIER); 
+    int tid = tp1-1;
+    Node* n = new_node(NODE_VAR);
+    int isarray = 0;
+    int dc = 0;
+    int te = 1;
+    int thisoffset = bp + curroffset;
+    n->var.dt = ft;
+    n->var.offset = thisoffset;
+    n->token_id = tid; // Index of d_tok
+
+    
+    
+    add_to_symtab(d_tok,thisoffset,0,gt_count,ft,count);
+    int id = find_symbol(gettokenname(d_tok));
+
+    while(match('['))
+    {
+      consume('[');
+      if(match(']'))
+      {
+        if (dc > 0) {
+          printf("Multidimensional arrays must specify concrete bounds for inner dimensions", peek()->line);
+          exit(0);
+        }
+        consume(']');
+        symtab[id].dim_size[0]  = 0;
+        dc++;
+      }
+      else 
+      {
+        int currsize = atoi(gettokenname(consume(T_INT)));
+        consume(']');
+        symtab[id].dim_size[dc] = currsize;
+        dc++;
+        te = te*currsize;
+      }
+      isarray = 1;
+    }
+    
+    
+    if(peek()->type == '=')
+    {
+      advance();
+      if(match('{'))
+      {
+        consume('{');
+        int valcount = 0;
+        Node* head = NULL; 
+        Node* curr = NULL;
+        while(!match('}'))
+        {
+          Node* temp = new_node(NODE_INT);
+          temp->unary.expr = parse_expression(0);
+          if(match(','))consume(',');
+          
+          if(head == NULL)
+          {
+            head = temp;
+            curr = temp;
+          }
+          else
+          {
+            curr->next = temp;
+            curr = temp;
+          }
+          
+          valcount++;
+        }
+        if(symtab[id].dim_size[0]==0)
+        {
+          symtab[id].dim_size[0] = valcount;
+          te = valcount;
+        }
+        consume('}');
+        n->var.value = head;
+      }
+      else n->var.value = parse_expression(0);
+    }
+    curroffset += base_size*te;
+    
+    symtab[id].dim_cnt = dc;
+    symtab[id].size = te;
+    symtab[id].isarray = isarray;
+    symtab[id].offset = thisoffset;
+    symtab[id].struct_id = struct_id;
+    n->next = NULL;
+    if(head_node == NULL) {
+       head_node = n;
+     } else {
+       prev_node->next = n;
+     }
+     prev_node = n;
+
+     if(match(',')) 
+     {
+       consume(',');
+     } 
+     else if(peek()->type == ';') 
+     {
+       break; 
+     } 
+     else 
+     {
+       printf("Parser Error: Expected ',' or ';' in declaration list\n");
+       exit(1);
+     }
     
   }
-  symtab[id].dim_cnt = dc;
-  symtab[id].size = te;
-  symtab[id].isarray = isarray;
+  bp+=curroffset;
   
-  bp+=(4*te);
-  
-  if(peek()->type == '=')
-  {
-    advance();
-    n->var.value = parse_expression(0);
-  }
   consume(';');
-  n->next = NULL;
-  return n;
+  prev_node->next = NULL;
+  return head_node;
 }
 
 Node* parse_global_declaration()
@@ -550,49 +764,140 @@ Node* parse_global_declaration()
   printf("Entering parse global dec\n");
   if(!is_type(peek()->type)) exit(1); 
   Token* rt = advance();
-  int count = 0;
-  while(match('*'))
-  {
-    consume('*');
-    count++;
-  }
-  Token* d_tok = consume(T_IDENTIFIER); 
-  Node* n = new_node(NODE_GVAR);
-  n->gvar.name = gettokenname(d_tok);
-  n->gvar.dt = rt->type;
-  n->gvar.offset = gbr;
-  n->token_id = tp1 - 1; // Index of d_tok
-  add_to_symtab(d_tok,gbr,1,gt_count,rt->type,count);
-  int id = find_symbol(gettokenname(d_tok));
-  int isarray = 0;
-  int dc = 0;
-  int te = 1;
+  int base_type = rt->type;
 
-  while(match('['))
+  Node* head_node = NULL;
+  Node* prev_node = NULL;
+  int base_size = 4;
+  int is_struct = 0;
+  int struct_id = -1;
+  if(base_type == K_STRUCT || base_type == T_IDENTIFIER)
   {
-    consume('[');
-    int currsize = atoi(gettokenname(consume(T_INT)));
-    consume(']');
-    symtab[id].dim_size[dc] = currsize;
-    dc++;
-    te = te*currsize;
-    isarray = 1;
+    if(base_type == K_STRUCT)rt = consume(T_IDENTIFIER);
+    struct_id = find_struct(gettokenname(rt));
+    if(struct_id == -1) {
+      printf("Error: struct undefined\n");
+      exit(1);
+    }
+    base_size = struct_table[struct_id].size;
+  }
+
+  while(1)
+  {
+    int count = 0;
+    while(match('*'))
+    {
+      consume('*');
+      count++;
+    }
+    if(count>0)base_size=4;
+    Token* d_tok = consume(T_IDENTIFIER); 
+    Node* n = new_node(NODE_GVAR);
+    n->gvar.name = gettokenname(d_tok);
+    n->gvar.dt = rt->type;
+    n->gvar.offset = gbr;
+    n->token_id = tp1 - 1; // Index of d_tok
+    add_to_symtab(d_tok,gbr,1,gt_count,base_type,count);
+    int id = find_symbol(gettokenname(d_tok));
+    int isarray = 0;
+    int dc = 0;
+    int te = 1;
+
+    while(match('['))
+    {
+      consume('[');
+      if(match(T_INT))
+      {
+        int currsize = atoi(gettokenname(consume(T_INT)));
+        symtab[id].dim_size[dc] = currsize;
+        te = te*currsize;
+      }
+      else 
+      {
+        symtab[id].dim_size[dc] = 0;
+      }
+      dc++;
+      consume(']');
+      
+      isarray = 1;
+      
+    }
+  
+  
+    if(peek()->type == '=')
+    {
+      advance();
+      if(match('{'))
+      {
+        consume('{');
+        int valcount = 0;
+        Node* head = NULL;
+        Node* curr = NULL;
+        while(!match('}'))
+        {
+          Node* temp = new_node(NODE_INT);
+          temp->unary.expr = parse_expression(0);
+          if(match(','))consume(',');
+          if(head == NULL)
+          {
+            head = temp;
+            curr = temp;
+          }
+          else
+          {
+            curr->next = temp;
+            curr = temp;
+          }
+          valcount++;
+        }
+        n->gvar.value = head;
+        if(symtab[id].dim_size[0] == 0)
+        {
+          symtab[id].dim_size[0] = valcount;
+          te = valcount;
+        }
+        consume('}');
+      }
+      else 
+      {
+        n->gvar.value = parse_expression(0);
+      }
+    }
+    symtab[id].dim_cnt = dc;
+    symtab[id].size = te;
+    symtab[id].isarray = isarray;
+    symtab[id].struct_id = struct_id; 
     
+    
+    gbr+=base_size*te;
+    n->next = NULL;
+
+    if(head_node == NULL) {
+       head_node = n;
+     } else {
+       prev_node->next = n;
+     }
+     prev_node = n;
+
+     if(match(',')) 
+     {
+       consume(',');
+     } 
+     else if(peek()->type == ';') 
+     {
+       break; 
+     } 
+     else 
+     {
+       printf("Parser Error: Expected ',' or ';' in declaration list\n");
+       exit(1);
+     }
   }
-  symtab[id].dim_cnt = dc;
-  symtab[id].size = te;
-  symtab[id].isarray = isarray;
   
-  gbr+=4*te;
   
-  if(peek()->type == '=')
-  {
-    advance();
-    n->gvar.value = parse_expression(0);
-  }
-  n->next = NULL;
   consume(';');
-  return n;
+  prev_node->next = NULL;
+  return head_node;
 }
 
 Node* parse_if_stmt()
@@ -687,13 +992,117 @@ Node* parse_for()
   return outer_block;
 }
 
+void parse_struct_def()
+{
+  st_count++;
+  consume(K_STRUCT);
+  int f1 = 0;
+  if(match(T_IDENTIFIER))
+  {
+    Token* name = consume(T_IDENTIFIER);
+    f1 = 1;
+    struct_table[st_count].name = gettokenname(name);
+  }
+  else 
+  {
+    struct_table[st_count].name = NULL;
+  }
+  int memcount = -1;
+  int curroff = 0;
+  consume('{');
+  while(!match('}'))
+  {
+    memcount++;
+    int e_size = 0;
+    int isptr = 0;
+    Token* type_tok = advance();
+    struct_table[st_count].mem_type[memcount] = type_tok->type;
+    if(type_tok->type == K_STRUCT)
+    {
+      Token* tname = consume(T_IDENTIFIER);
+      struct_table[st_count].mem_struct_name[memcount] = gettokenname(tname);
+    }
+    while(match('*'))
+    {
+      consume('*');
+      isptr += 1; 
+    }
+    struct_table[st_count].isptr[memcount] = isptr;
+    if(isptr)e_size = 4;
+    else if(type_tok->type == K_STRUCT)
+    {
+      int s_idx = find_struct(struct_table[st_count].mem_struct_name[memcount]);
+      if (s_idx != -1) {
+        e_size = struct_table[s_idx].size;
+      }
+      else
+      {
+        printf("Error: struct %s undefined\n", struct_table[st_count].mem_struct_name[memcount]);
+        exit(1);
+      }
+    }
+    else e_size = 4;
+    Token* e_name = consume(T_IDENTIFIER);
+    struct_table[st_count].mem_name[memcount] = gettokenname(e_name);
+    struct_table[st_count].offset[memcount] = curroff;
+    while(match('['))
+    {
+      int arr_size = 0;
+      consume('[');
+      while(!match(']'))
+      {
+        Token* t = consume(T_INT);
+        arr_size = atoi(gettokenname(t));
+      }
+      consume(']');
+      e_size *= arr_size;
+    }
+    consume(';');
+    e_size = (e_size + 3)&~3;
+    curroff += e_size;    
+  }
+  consume('}');
+  struct_table[st_count].size = curroff;
+  struct_table[st_count].count = memcount+1;
+}
+
 
 
 void parse_top_level() 
 {
   init_parser();
   while (tokens[tp1].type != T_EOF) {
-    if (is_type(tokens[tp1].type)) {
+    if(tokens[tp1].type == K_STRUCT && (tokens[tp1 + 2].type == '{'))
+    {
+      parse_struct_def();
+    }
+    else if(tokens[tp1].type == K_TYPEDEF )
+    {
+      consume(K_TYPEDEF);
+      if(tokens[tp1].type == K_STRUCT)
+      {
+        parse_struct_def();
+        Token* alias = consume(T_IDENTIFIER);
+        consume(';');
+
+        if(struct_table[st_count].name == NULL || strlen(struct_table[st_count].name) == 0)
+        {
+          struct_table[st_count].name = gettokenname(alias);
+        }
+        else 
+        {
+          int orgid = st_count++;
+          struct_table[st_count] = struct_table[orgid];
+          struct_table[st_count].name = gettokenname(alias);
+        }
+      }
+      else 
+      {
+        printf("Unsupported typedef type (structs only for now)\n");
+        exit(1);
+      }
+    }
+    else if (is_type(tokens[tp1].type)) {
         printf("Token is a type , enting next phase \n");
         if (tokens[tp1 + 2].type == '(') 
           append_node(parse_function()); 
@@ -716,8 +1125,13 @@ void parse_top_level()
 Node* parse_statement()
 {
   printf("Got into parse statement \n");
+  if (is_type(tokens[tp1].type))
+  {
+     return parse_declaration();
+  }
   switch(tokens[tp1].type)
   {
+    case K_STRUCT:
     case K_INT:
     case K_CHAR:
     case K_VOID: 

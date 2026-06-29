@@ -17,6 +17,8 @@ typedef enum
   T_GEQ,
   T_EQ,
   T_ARROW,
+  T_INC,
+  T_DEC,
   K_IF,
   K_DO,
   K_INT,

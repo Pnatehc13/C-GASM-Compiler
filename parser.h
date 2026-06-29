@@ -6,7 +6,8 @@ typedef enum {
     NODE_FUNC, NODE_BLOCK, NODE_VAR, NODE_INT, 
     NODE_BIN, NODE_IF, NODE_WHILE, NODE_RETURN,
     NODE_CALL, NODE_ASSIGN,NODE_STR,NODE_GVAR,NODE_POINTER,
-    NODE_ADDR,NODE_BREAK,NODE_CONTINUE,NODE_ARR_ACCESS
+    NODE_ADDR,NODE_BREAK,NODE_CONTINUE,NODE_ARR_ACCESS, NODE_STRUCT, NODE_MEM_ACCESS,
+    NODE_PREINC, NODE_PREDEC , NODE_POSTINC, NODE_POSTDEC
 } NodeType;
 
 extern int bp;
@@ -30,6 +31,14 @@ typedef struct Node {
             struct Node* value; 
         } var;
 
+        struct {
+            struct Node* par_expr;
+            int op;
+            int offset;
+            TokenType dt;
+            int struct_id;
+        } mem;
+        
         struct {
             char* string;
         } str;
@@ -74,6 +83,8 @@ typedef struct Node {
         struct {
             struct Node* value; 
         }ret;
+
+
     };
     struct Node* indnxt;
     struct Node* next;
@@ -91,6 +102,7 @@ typedef struct r
     int ptrlvl;
     int dim_size[256];
     int dim_cnt;
+    int struct_id;
 }Record;
 extern int sp;
 
@@ -101,6 +113,20 @@ typedef struct g
     Node* p;
 }Globalentry;
 
+typedef struct se
+{
+    char* name;
+    char* mem_name[32];
+    int mem_type[32];
+    char* mem_struct_name[32];
+    int isptr[32];
+    int size;
+    int offset[32];
+    int count;
+}Structentry;
+
+extern Structentry struct_table[256]; 
+extern int st_count;
 extern Globalentry global_table[256];
 extern int gt_count;
 void print_tree(Node* n, int depth);
